@@ -38,6 +38,10 @@ fn data_home() -> PathBuf {
 }
 
 pub fn install() {
+    // Distro packages ship the icon, launcher and user unit under /usr; don't duplicate them.
+    if exe().starts_with("/usr/") {
+        return;
+    }
     let icons = data_home().join("icons/hicolor");
     put(&icons.join(format!("scalable/apps/{APP_ID}.svg")), ICON);
     put(&icons.join(format!("symbolic/apps/{APP_ID}-symbolic.svg")), ICON_SYMBOLIC);

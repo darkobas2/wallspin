@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Wallspin
+Comment=Wallpaper changer: topics, per-monitor images, clock
+Exec=wallspin prefs
+Icon=io.github.Wallspin
+Terminal=false
+Type=Application
+Categories=GNOME;GTK;Settings;DesktopSettings;
+Keywords=wallpaper;background;variety;slideshow;
+StartupNotify=true
