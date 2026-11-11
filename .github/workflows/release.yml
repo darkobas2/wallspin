@@ -27,3 +27,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" wallspin-*.tar.gz* --generate-notes
+
+  # crates.io Trusted Publishing: GitHub's OIDC identity is exchanged for a short-lived token.
+  # One-time setup on crates.io: wallspin → Settings → Trusted Publishing → add
+  #   repository darkobas2/wallspin, workflow release.yml.
+  crates-io:
+    needs: release
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgtk-4-dev libadwaita-1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
