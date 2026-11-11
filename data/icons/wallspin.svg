@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#613583"/>
+      <stop offset="0.55" stop-color="#c64600"/>
+      <stop offset="1" stop-color="#f5c211"/>
+    </linearGradient>
+    <linearGradient id="badge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#62a0ea"/>
+      <stop offset="1" stop-color="#1c71d8"/>
+    </linearGradient>
+    <clipPath id="pic"><rect x="18" y="22" width="92" height="70" rx="6"/></clipPath>
+  </defs>
+  <!-- card -->
+  <rect x="10" y="18" width="108" height="86" rx="12" fill="#9a9996"/>
+  <rect x="10" y="14" width="108" height="86" rx="12" fill="#f6f5f4"/>
+  <!-- picture -->
+  <g clip-path="url(#pic)">
+    <rect x="18" y="22" width="92" height="70" fill="url(#sky)"/>
+    <circle cx="74" cy="60" r="12" fill="#f9f06b"/>
+    <path d="M18 92 L18 70 L40 52 L56 66 L70 56 L92 74 L110 62 L110 92 Z" fill="#3d3846"/>
+    <path d="M18 92 L18 82 L36 72 L58 84 L80 76 L110 88 L110 92 Z" fill="#241f31"/>
+  </g>
+  <!-- spin badge -->
+  <circle cx="98" cy="100" r="24" fill="#1a5fb4"/>
+  <circle cx="98" cy="98" r="24" fill="url(#badge)"/>
+  <g fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round">
+    <path d="M85.5 92.5 A14 14 0 0 1 108.5 88.5"/>
+    <path d="M110.5 103.5 A14 14 0 0 1 87.5 107.5"/>
+  </g>
+  <path d="M112.5 80.5 L112.6 93.2 L100.5 89.6 Z" fill="#fff"/>
+  <path d="M83.5 115.5 L83.4 102.8 L95.5 106.4 Z" fill="#fff"/>
+</svg>

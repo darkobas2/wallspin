@@ -1,0 +1,19 @@
+[Unit]
+Description=wallspin wallpaper daemon
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.cargo/bin/wallspin daemon
+Restart=on-failure
+RestartSec=5
+# Ceiling in case of a leak. NOTE: only enforced if the user manager has the memory
+# controller delegated (check: cat /sys/fs/cgroup/user.slice/user-$UID.slice/user@$UID.service/cgroup.controllers).
+# Steady state is ~20 MiB; a single 8K PNG decode peaks around 240 MiB.
+MemoryHigh=320M
+MemoryMax=400M
+Environment=MALLOC_ARENA_MAX=2
+Nice=10
+
+[Install]
+WantedBy=graphical-session.target
