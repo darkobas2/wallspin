@@ -182,12 +182,25 @@ async fn run(cmd: Cmd) -> Result<()> {
         }
         Cmd::Shortcuts { remove } => {
             let exe = std::env::current_exe()?;
-            gnome::install_shortcuts(&exe, remove).await?;
+            let warnings = gnome::install_shortcuts(&exe, remove).await?;
             if remove {
                 println!("removed wallspin shortcuts");
             } else {
-                for (_, name, key) in gnome::SHORTCUTS {
-                    println!("  {key:<22} {name}");
+                let skipped: Vec<&str> = gnome::SHORTCUTS
+                    .iter()
+                    .filter(|(_, n, _)| warnings.iter().any(|w| w.contains(n)))
+                    .map(|(_, n, _)| *n)
+                    .collect();
+                println!(
+                    "installed {} of {} shortcuts",
+                    gnome::SHORTCUTS.len() - skipped.len(),
+                    gnome::SHORTCUTS.len()
+                );
+                for (_, name, key) in gnome::SHORTCUTS.iter().filter(|(_, n, _)| !skipped.contains(n)) {
+                    println!("  {key:<18} {name}");
+                }
+                for w in &warnings {
+                    println!("  {w}");
                 }
             }
             Ok(())

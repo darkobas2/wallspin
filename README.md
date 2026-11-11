@@ -37,7 +37,7 @@ filters, API keys, shortcuts and the background service. The tray is optional.
 |---|---|---|
 | Tray icon | any StatusNotifier host (AppIndicator ext, KDE, waybar) — auto-detected | left-click next, scroll history, menu: sources, add topic, suggested topics, lock mode |
 | Notification | nothing | each change shows Next / ♥ Favorite / Trash / Ban buttons (`notify = false` to disable) |
-| Shortcuts | nothing | `wallspin shortcuts` installs Super+Alt+→ ← ↑(fav) ↓(trash) Del(ban) |
+| Shortcuts | nothing | `wallspin shortcuts` installs Super+Alt+Page Down (next), Page Up (back), F (favorite), T (trash), X (ban); skips any combo already in use |
 | CLI | — | `next prev fav ban trash status download [n] reload quit` |
 
 ## Sources — topics, not URLs

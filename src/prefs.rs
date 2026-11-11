@@ -774,10 +774,7 @@ fn page_controls(s: &S, cfg: &Config) -> adw::PreferencesPage {
     let add = button("Install", &["flat"]);
     let del = button("Remove", &["flat"]);
     let s2 = s.clone();
-    add.connect_clicked(move |_| cli_then(&s2, &["shortcuts"], false, {
-        let s3 = s2.clone();
-        move |ok| toast(&s3, if ok { "Shortcuts installed" } else { "Couldn't install shortcuts" })
-    }));
+    add.connect_clicked(move |_| cli(&s2, &["shortcuts"], true));
     let s2 = s.clone();
     del.connect_clicked(move |_| cli(&s2, &["shortcuts", "--remove"], true));
     row.add_suffix(&del);
