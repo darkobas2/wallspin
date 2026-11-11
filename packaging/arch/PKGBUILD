@@ -1,6 +1,6 @@
 # Maintainer: darkobas <https://github.com/darkobas2>
 pkgname=wallspin
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
 pkgdesc="Wallpaper changer for GNOME: topics, per-monitor images, clock overlay"
 arch=('x86_64' 'aarch64')

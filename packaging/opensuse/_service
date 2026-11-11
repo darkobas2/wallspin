@@ -1,7 +1,7 @@
 <services>
   <service name="download_files" mode="manual"/>
   <service name="cargo_vendor" mode="manual">
-    <param name="src">wallspin-0.1.1.tar.gz</param>
+    <param name="src">wallspin-0.1.2.tar.gz</param>
     <param name="compression">zst</param>
     <param name="update">false</param>
   </service>
