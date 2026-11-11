@@ -20,9 +20,36 @@ struct State {
     /// Defaults applied to newly added Wallhaven topics.
     new_min_res: Cell<u32>,
     new_sort: Cell<u32>,
+    /// Widgets that reflect the background service, fed by `refresh_service` as (running, enabled).
+    service_watchers: RefCell<Vec<Rc<dyn Fn(bool, bool)>>>,
 }
 
 type S = Rc<State>;
+
+fn service_state() -> (bool, bool) {
+    (
+        sh_ok(&["systemctl", "--user", "is-active", "--quiet", "wallspin"]),
+        sh_ok(&["systemctl", "--user", "is-enabled", "--quiet", "wallspin"]),
+    )
+}
+
+fn refresh_service(s: &S) {
+    let (running, enabled) = service_state();
+    for w in s.service_watchers.borrow().iter() {
+        w(running, enabled);
+    }
+}
+
+/// Run a systemctl action, then re-read the service state once it has settled.
+fn service_action(s: &S, args: &[&str]) {
+    let mut argv = vec!["systemctl", "--user"];
+    argv.extend_from_slice(args);
+    let argv: Vec<&std::ffi::OsStr> = argv.into_iter().map(std::ffi::OsStr::new).collect();
+    let s2 = s.clone();
+    run_proc(s, &argv, true, move |_| {
+        glib::timeout_add_local_once(std::time::Duration::from_millis(800), move || refresh_service(&s2));
+    });
+}
 
 const MIN_RES: &[(&str, Option<&str>)] = &[
     ("Any", None),
@@ -68,6 +95,9 @@ fn build(app: &adw::Application, page: Option<&str>) {
     toasts.set_child(Some(&stack));
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
+    // Shown on every page while the background service is off.
+    let banner = adw::Banner::new("");
+    toolbar.add_top_bar(&banner);
     toolbar.set_content(Some(&toasts));
     window.set_content(Some(&toolbar));
 
@@ -83,7 +113,38 @@ fn build(app: &adw::Application, page: Option<&str>) {
         source_rows: RefCell::new(Vec::new()),
         new_min_res: Cell::new(2),
         new_sort: Cell::new(0),
+        service_watchers: RefCell::new(Vec::new()),
     });
+
+    let enable_too = Rc::new(Cell::new(false));
+    {
+        let (banner, enable_too) = (banner.clone(), enable_too.clone());
+        s.service_watchers.borrow_mut().push(Rc::new(move |running, enabled| {
+            if running {
+                banner.set_revealed(false);
+                return;
+            }
+            enable_too.set(!enabled);
+            if enabled {
+                banner.set_title("Wallspin isn't running");
+                banner.set_button_label(Some("Start"));
+            } else {
+                banner.set_title("Wallspin is off — wallpapers won't change");
+                banner.set_button_label(Some("Turn on"));
+            }
+            banner.set_revealed(true);
+        }));
+    }
+    {
+        let s2 = s.clone();
+        banner.connect_button_clicked(move |_| {
+            if enable_too.get() {
+                service_action(&s2, &["enable", "--now", "wallspin"]); // start now and at every login
+            } else {
+                service_action(&s2, &["restart", "wallspin"]);
+            }
+        });
+    }
 
     stack.add_titled_with_icon(&page_wallpaper(&s, &cfg), Some("wallpaper"), "Wallpaper", "preferences-desktop-wallpaper-symbolic");
     stack.add_titled_with_icon(&page_sources(&s), Some("sources"), "Sources", "folder-pictures-symbolic");
@@ -92,6 +153,16 @@ fn build(app: &adw::Application, page: Option<&str>) {
     if let Some(p) = page {
         stack.set_visible_child_name(p);
     }
+    refresh_service(&s);
+    // Keep the banner and the Controls page honest if the service is changed elsewhere.
+    let weak = Rc::downgrade(&s);
+    glib::timeout_add_seconds_local(3, move || match weak.upgrade() {
+        Some(s) => {
+            refresh_service(&s);
+            glib::ControlFlow::Continue
+        }
+        None => glib::ControlFlow::Break,
+    });
     window.present();
 }
 
@@ -708,10 +779,9 @@ fn page_controls(s: &S, cfg: &Config) -> adw::PreferencesPage {
     let restart = button("Start", &["suggested-action"]);
     status.add_suffix(&restart);
     g.add(&status);
-    let refresh: Rc<dyn Fn()> = {
+    {
         let (status, restart) = (status.clone(), restart.clone());
-        Rc::new(move || {
-            let running = sh_ok(&["systemctl", "--user", "is-active", "--quiet", "wallspin"]);
+        s.service_watchers.borrow_mut().push(Rc::new(move |running, _| {
             status.set_subtitle(if running { "Running" } else { "Not running" });
             restart.set_label(if running { "Restart" } else { "Start" });
             if running {
@@ -719,23 +789,30 @@ fn page_controls(s: &S, cfg: &Config) -> adw::PreferencesPage {
             } else {
                 restart.add_css_class("suggested-action");
             }
-        })
-    };
-    refresh();
-    let (s2, r2) = (s.clone(), refresh.clone());
-    restart.connect_clicked(move |_| {
-        let r3 = r2.clone();
-        let argv = ["systemctl", "--user", "restart", "wallspin"].map(std::ffi::OsStr::new);
-        run_proc(&s2, &argv, true, move |_| {
-            glib::timeout_add_local_once(std::time::Duration::from_millis(800), move || r3());
-        });
-    });
-    let enabled = sh_ok(&["systemctl", "--user", "is-enabled", "--quiet", "wallspin"]);
+        }));
+    }
     let s2 = s.clone();
-    g.add(&switch_row("Start at login", "", enabled, move |on| {
-        let argv = ["systemctl", "--user", if on { "enable" } else { "disable" }, "wallspin"].map(std::ffi::OsStr::new);
-        run_proc(&s2, &argv, false, |_| {});
-    }));
+    restart.connect_clicked(move |_| service_action(&s2, &["restart", "wallspin"]));
+
+    // Programmatic updates (from the watcher) must not re-run systemctl.
+    let syncing = Rc::new(Cell::new(false));
+    let (s2, sy) = (s.clone(), syncing.clone());
+    let login = switch_row("Start at login", "", false, move |on| {
+        if !sy.get() {
+            service_action(&s2, &[if on { "enable" } else { "disable" }, "wallspin"]);
+        }
+    });
+    {
+        let (login, syncing) = (login.clone(), syncing.clone());
+        s.service_watchers.borrow_mut().push(Rc::new(move |_, enabled| {
+            if login.is_active() != enabled {
+                syncing.set(true);
+                login.set_active(enabled);
+                syncing.set(false);
+            }
+        }));
+    }
+    g.add(&login);
     page.add(&g);
 
     // --- feedback / tray
