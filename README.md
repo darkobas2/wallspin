@@ -17,13 +17,19 @@ so the texture is never bigger than your monitors (an 8K source would otherwise 
 
 ## Install
 
+Needs GTK 4 and libadwaita (development packages to build: `gtk4-devel libadwaita-devel` on
+openSUSE/Fedora, `libgtk-4-dev libadwaita-1-dev` on Debian/Ubuntu).
+
 ```sh
-cargo install --path .
-wallspin import-variety            # migrate ~/.config/variety (sources, bans, history, filters)
-mkdir -p ~/.config/systemd/user && cp contrib/wallspin.service ~/.config/systemd/user/
-systemctl --user daemon-reload && systemctl --user enable --now wallspin
-wallspin shortcuts                 # optional: Super+Alt+arrows
+cargo install --git https://github.com/darkobas2/wallspin
+wallspin                          # opens Preferences; installs icon, launcher and user service
+systemctl --user enable --now wallspin
+wallspin import-variety           # optional: migrate ~/.config/variety (sources, bans, history)
 ```
+
+Everything is configurable from the **Preferences** window (app grid → Wallspin, or tray →
+Preferences…): changing interval, monitors, clock, lock screen, sources and topics, downloads,
+filters, API keys, shortcuts and the background service. The tray is optional.
 
 ## Control surfaces
 
@@ -89,7 +95,7 @@ GNOME Shell ≥ 3.38 draws the lock screen from the **desktop** wallpaper (blurr
 
 ## Not yet
 
-Settings window (GTK4/libadwaita), other desktops' backends (KDE/sway),
+Other desktops' backends (KDE/sway),
 own SNI implementation on zbus 6 (to drop ksni's zbus 5).
 
 ## About this code

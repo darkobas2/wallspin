@@ -251,7 +251,6 @@ impl Actor {
     }
 
     async fn startup(&mut self) {
-        self.clean_legacy_outputs();
         self.refresh_pool(true);
         info!("pool: {} images, {} in history", self.pool.len(), self.hist.len());
         let stale_lock = self.db.get_state("lock_swapped").ok().flatten().is_some();
@@ -759,17 +758,6 @@ impl Actor {
         let dir = self.render_dir();
         std::fs::create_dir_all(&dir)?;
         Ok(dir.join("wallspin-wallpaper.jpg"))
-    }
-
-    /// Remove per-change files written by older builds.
-    fn clean_legacy_outputs(&self) {
-        let Ok(rd) = std::fs::read_dir(self.render_dir()) else { return };
-        for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().into_owned();
-            if ["wallspin-", "wallspin-frame-"].iter().any(|p| n.starts_with(p)) {
-                let _ = std::fs::remove_file(e.path());
-            }
-        }
     }
 
     async fn on_lock(&mut self, on: bool) -> Result<String> {

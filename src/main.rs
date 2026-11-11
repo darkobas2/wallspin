@@ -23,7 +23,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Open the preferences window (default)
-    Prefs,
+    Prefs {
+        /// Start on a page: wallpaper, sources, downloads, controls
+        #[arg(long)]
+        page: Option<String>,
+    },
     /// Run the background daemon
     Daemon,
     /// Next wallpaper
@@ -143,7 +147,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let cmd = match cli.cmd {
         // GTK runs its own main loop; no tokio runtime for the preferences window.
-        None | Some(Cmd::Prefs) => std::process::exit(prefs::run()),
+        None => std::process::exit(prefs::run(None)),
+        Some(Cmd::Prefs { page }) => std::process::exit(prefs::run(page)),
         Some(c) => c,
     };
     tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?.block_on(run(cmd))
@@ -151,7 +156,7 @@ fn main() -> Result<()> {
 
 async fn run(cmd: Cmd) -> Result<()> {
     match cmd {
-        Cmd::Prefs => unreachable!(),
+        Cmd::Prefs { .. } => unreachable!(),
         Cmd::Daemon => {
             assets::install();
             daemon::run().await

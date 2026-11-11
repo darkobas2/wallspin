@@ -1,5 +1,10 @@
 [package]
 name = "wallspin"
+description = "Wallpaper changer for GNOME: topics, per-monitor images, clock overlay"
+license = "MIT"
+repository = "https://github.com/darkobas2/wallspin"
+keywords = ["wallpaper", "gnome", "desktop", "background"]
+categories = ["command-line-utilities", "gui"]
 version = "0.1.0"
 edition = "2024"
 

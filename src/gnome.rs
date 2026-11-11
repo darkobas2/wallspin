@@ -70,11 +70,11 @@ fn parse_strv(s: &str) -> Vec<String> {
 
 pub async fn install_shortcuts(exe: &Path, remove: bool) -> Result<()> {
     let mut list = parse_strv(&gget(MK, "custom-keybindings").await?);
-    // Also drop bindings from the pre-rename "variety-rs" builds.
-    for old in list.iter().filter(|p| p.contains("/wallspin-") || p.contains("/variety-rs-")) {
+    // Only ever touch our own bindings.
+    for old in list.iter().filter(|p| p.contains("/wallspin-")) {
         let _ = Command::new("dconf").args(["reset", "-f", old]).status().await;
     }
-    list.retain(|p| !p.contains("/wallspin-") && !p.contains("/variety-rs-"));
+    list.retain(|p| !p.contains("/wallspin-"));
     if !remove {
         for (cmd, name, binding) in SHORTCUTS {
             let path = format!("{KB_BASE}/wallspin-{cmd}/");
