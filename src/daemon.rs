@@ -1175,16 +1175,26 @@ async fn spawn_tray(tx: Tx, cfg: &Config) -> Option<ksni::Handle<Tray>> {
         monitors: cfg.monitors,
         clock: cfg.clock.enabled,
     };
-    match tray.spawn().await {
+    // At login the service usually starts before GNOME Shell loads the AppIndicator
+    // extension, so the StatusNotifierWatcher isn't on the bus yet. Keep the item alive and
+    // let ksni register it whenever a watcher appears (or reappears after a shell restart).
+    match tray.assume_sni_available(true).spawn().await {
         Ok(h) => Some(h),
         Err(e) => {
-            info!("no tray host ({e}); use notifications / shortcuts / CLI");
+            info!("tray unavailable ({e}); use notifications / shortcuts / CLI");
             None
         }
     }
 }
 
 impl ksni::Tray for Tray {
+    fn watcher_online(&self) {
+        info!("tray host online");
+    }
+    fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool {
+        info!("no tray host yet ({reason:?}); will show the icon when one appears");
+        true
+    }
     fn id(&self) -> String {
         config::APP.into()
     }
