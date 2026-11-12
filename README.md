@@ -20,8 +20,16 @@ so the texture is never bigger than your monitors (an 8K source would otherwise 
 Needs GTK 4 and libadwaita (development packages to build: `gtk4-devel libadwaita-devel` on
 openSUSE/Fedora, `libgtk-4-dev libadwaita-1-dev` on Debian/Ubuntu).
 
+| Where | How |
+|---|---|
+| crates.io | `cargo install wallspin` |
+| openSUSE (OBS) | [home:darkobas/wallspin](https://build.opensuse.org/package/show/home:darkobas/wallspin) — add the repo, then `zypper in wallspin` |
+| Prebuilt binary | x86_64 tarball on [Releases](https://github.com/darkobas2/wallspin/releases) |
+| Git main | `cargo install --git https://github.com/darkobas2/wallspin` |
+
+Then:
+
 ```sh
-cargo install --git https://github.com/darkobas2/wallspin
 wallspin                          # opens Preferences; installs icon, launcher and user service
 systemctl --user enable --now wallspin
 wallspin import-variety           # optional: migrate ~/.config/variety (sources, bans, history)
