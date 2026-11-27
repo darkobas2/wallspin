@@ -2,7 +2,7 @@
 # spec file for package wallspin
 #
 Name:           wallspin
-Version:        0.1.4
+Version:        0.1.5
 Release:        0
 Summary:        Wallpaper changer for GNOME with topics, per-monitor images and a clock
 License:        MIT

@@ -1,4 +1,10 @@
 -------------------------------------------------------------------
+Fri Nov 27 12:30:00 UTC 2026 - Marko Zidarič <darkobas@gmail.com>
+
+- Update to 0.1.5:
+  * Subtle per-minute clock pixel shift to prevent OLED burn-in
+
+-------------------------------------------------------------------
 Fri Nov 27 10:00:00 UTC 2026 - Marko Zidarič <darkobas@gmail.com>
 
 - Update to 0.1.4:
