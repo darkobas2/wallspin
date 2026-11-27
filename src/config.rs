@@ -53,9 +53,11 @@ pub struct ClockConfig {
     /// chrono/strftime formats
     pub time_format: String,
     pub date_format: String,
-    /// bottom-right, bottom-left, top-right, top-left (on the primary monitor)
+    /// bottom-right, bottom-left, top-right, top-left
     pub position: String,
     pub shadow: bool,
+    /// Draw the clock on every connected monitor instead of only the primary one.
+    pub all_monitors: bool,
 }
 
 impl Default for ClockConfig {
@@ -70,6 +72,7 @@ impl Default for ClockConfig {
             date_format: "%A, %B %d".into(),
             position: "bottom-right".into(),
             shadow: true,
+            all_monitors: false,
         }
     }
 }
@@ -350,4 +353,16 @@ pub fn fnv(s: &str) -> u32 {
         h = h.wrapping_mul(0x01000193);
     }
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clock_all_monitors_defaults_false_when_omitted() {
+        let cfg: Config = toml::from_str("[clock]\nenabled = true\n").unwrap();
+        assert!(cfg.clock.enabled);
+        assert!(!cfg.clock.all_monitors);
+    }
 }

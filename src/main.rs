@@ -31,17 +31,35 @@ enum Cmd {
     /// Run the background daemon
     Daemon,
     /// Next wallpaper
-    Next,
+    Next {
+        /// Only change this monitor (1-based index or name, e.g. DP-3) in `each` mode
+        #[arg(short, long)]
+        monitor: Option<String>,
+    },
     /// Previous wallpaper
     Prev,
     /// Copy current wallpaper to favorites
-    Fav,
+    Fav {
+        /// Monitor (1-based index or name, e.g. DP-3); defaults to primary
+        #[arg(short, long)]
+        monitor: Option<String>,
+    },
     /// Never show current wallpaper again
-    Ban,
+    Ban {
+        /// Monitor (1-based index or name, e.g. DP-3); defaults to primary
+        #[arg(short, long)]
+        monitor: Option<String>,
+    },
     /// Move current wallpaper to trash
-    Trash,
+    Trash {
+        /// Monitor (1-based index or name, e.g. DP-3); defaults to primary
+        #[arg(short, long)]
+        monitor: Option<String>,
+    },
     /// Show daemon status
     Status,
+    #[command(hide = true)]
+    MonitorsInfo,
     /// Download images now
     Download { n: Option<u32> },
     /// Re-read config.toml
@@ -161,12 +179,13 @@ async fn run(cmd: Cmd) -> Result<()> {
             assets::install();
             daemon::run().await
         }
-        Cmd::Next => remote("Next").await,
+        Cmd::Next { monitor } => remote_mon("Next", "NextMonitor", monitor).await,
         Cmd::Prev => remote("Prev").await,
-        Cmd::Fav => remote("Favorite").await,
-        Cmd::Ban => remote("Ban").await,
-        Cmd::Trash => remote("Trash").await,
+        Cmd::Fav { monitor } => remote_mon("Favorite", "FavoriteMonitor", monitor).await,
+        Cmd::Ban { monitor } => remote_mon("Ban", "BanMonitor", monitor).await,
+        Cmd::Trash { monitor } => remote_mon("Trash", "TrashMonitor", monitor).await,
         Cmd::Status => remote("Status").await,
+        Cmd::MonitorsInfo => remote("MonitorsInfo").await,
         Cmd::Reload => remote("Reload").await,
         Cmd::Quit => remote("Quit").await,
         Cmd::Download { n } => {
@@ -244,6 +263,17 @@ where
 
 async fn remote(method: &str) -> Result<()> {
     let s = call(method, &()).await?;
+    if !s.is_empty() {
+        println!("{s}");
+    }
+    Ok(())
+}
+
+async fn remote_mon(method: &str, mon_method: &str, monitor: Option<String>) -> Result<()> {
+    let s = match monitor {
+        Some(m) => call(mon_method, &(m,)).await?,
+        None => call(method, &()).await?,
+    };
     if !s.is_empty() {
         println!("{s}");
     }

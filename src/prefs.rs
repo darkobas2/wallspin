@@ -388,6 +388,7 @@ fn page_wallpaper(s: &S, cfg: &Config) -> adw::PreferencesPage {
 
     // --- now showing / quick actions
     let now = adw::PreferencesGroup::builder().title("Current wallpaper").build();
+    let monitor_rows: Rc<RefCell<Vec<gtk::Widget>>> = Rc::new(RefCell::new(Vec::new()));
     let row = adw::ActionRow::builder().title("Actions").subtitle("Same as the tray and notification buttons").build();
     let bx = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     for (icon, tip, cmd) in [
@@ -398,12 +399,18 @@ fn page_wallpaper(s: &S, cfg: &Config) -> adw::PreferencesPage {
         ("action-unavailable-symbolic", "Ban (never show again)", "ban"),
     ] {
         let b = icon_button(icon, tip);
-        let s2 = s.clone();
-        b.connect_clicked(move |_| cli(&s2, &[cmd], cmd == "fav" || cmd == "ban" || cmd == "trash"));
+        let (s2, now2, mr2) = (s.clone(), now.clone(), monitor_rows.clone());
+        b.connect_clicked(move |_| {
+            let (s3, now3, mr3) = (s2.clone(), now2.clone(), mr2.clone());
+            cli_then(&s2, &[cmd], cmd == "fav" || cmd == "ban" || cmd == "trash", move |_| {
+                refresh_monitors(&s3, &now3, &mr3);
+            });
+        });
         bx.append(&b);
     }
     row.add_suffix(&bx);
     now.add(&row);
+    refresh_monitors(s, &now, &monitor_rows);
     page.add(&now);
 
     // --- changing
@@ -472,13 +479,77 @@ fn page_wallpaper(s: &S, cfg: &Config) -> adw::PreferencesPage {
     page
 }
 
+fn refresh_monitors(s: &S, group: &adw::PreferencesGroup, rows: &Rc<RefCell<Vec<gtk::Widget>>>) {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wallspin"));
+    let argv: [&std::ffi::OsStr; 2] = [exe.as_os_str(), std::ffi::OsStr::new("monitors-info")];
+    let flags = gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_SILENCE;
+    let Ok(proc) = gio::Subprocess::newv(&argv, flags) else { return };
+    let (s, group, rows) = (s.clone(), group.clone(), rows.clone());
+    let p2 = proc.clone();
+    proc.communicate_utf8_async(None, None::<&gio::Cancellable>, move |res| {
+        for w in rows.borrow_mut().drain(..) {
+            group.remove(&w);
+        }
+        if !p2.is_successful() {
+            return;
+        }
+        let Ok((Some(out), _)) = res else { return };
+        let items: Vec<(&str, &str, bool)> = out
+            .lines()
+            .filter_map(|l| {
+                let mut parts = l.splitn(3, '\t');
+                Some((parts.next()?, parts.next()?, parts.next()? == "true"))
+            })
+            .collect();
+        if items.len() <= 1 {
+            return;
+        }
+        let mut added = Vec::new();
+        for (name, file, primary) in items {
+            let title = if primary { format!("{name} (primary)") } else { name.to_string() };
+            let row = adw::ActionRow::builder()
+                .title(glib::markup_escape_text(&title).as_str())
+                .subtitle(glib::markup_escape_text(file).as_str())
+                .build();
+            let bx = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            for (icon, tip, cmd) in [
+                ("go-next-symbolic", "Next on this monitor", "next"),
+                ("starred-symbolic", "Add to favorites", "fav"),
+                ("user-trash-symbolic", "Move to trash", "trash"),
+                ("action-unavailable-symbolic", "Ban (never show again)", "ban"),
+            ] {
+                let b = icon_button(icon, tip);
+                let (s2, g2, r2, m) = (s.clone(), group.clone(), rows.clone(), name.to_string());
+                b.connect_clicked(move |_| {
+                    let (s3, g3, r3) = (s2.clone(), g2.clone(), r2.clone());
+                    cli_then(&s2, &[cmd, "--monitor", &m], cmd == "fav" || cmd == "ban" || cmd == "trash", move |_| {
+                        refresh_monitors(&s3, &g3, &r3);
+                    });
+                });
+                bx.append(&b);
+            }
+            row.add_suffix(&bx);
+            group.add(&row);
+            added.push(row.upcast::<gtk::Widget>());
+        }
+        *rows.borrow_mut() = added;
+    });
+}
+
 fn clock_group(s: &S, clock: &ClockConfig) -> adw::PreferencesGroup {
     let g = adw::PreferencesGroup::builder()
         .title("Clock")
-        .description("Time and date drawn onto the wallpaper of the main monitor")
+        .description("Time and date drawn onto the wallpaper")
         .build();
     let s2 = s.clone();
     g.add(&switch_row("Show clock", "", clock.enabled, move |v| edit(&s2, |c| c.clock.enabled = v)));
+    let s2 = s.clone();
+    g.add(&switch_row(
+        "Show on all monitors",
+        "Draw the clock on every connected monitor instead of only the primary one",
+        clock.all_monitors,
+        move |v| edit(&s2, |c| c.clock.all_monitors = v),
+    ));
     let s2 = s.clone();
     g.add(&font_row("Time font", &clock.font, clock.size, move |p, sz| {
         edit(&s2, |c| {

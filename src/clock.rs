@@ -19,11 +19,11 @@ pub struct Rect {
     pub h: u32,
 }
 
-/// Size of the image GNOME will show 1:1, and where the primary monitor sits in it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Size of the image GNOME will show 1:1, and where each clock is drawn.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
     pub canvas: (u32, u32),
-    pub primary: Rect,
+    pub clocks: Vec<Rect>,
 }
 
 /// Live monitor arrangement: bounding-box canvas and every monitor in canvas
@@ -32,6 +32,8 @@ pub struct Layout {
 pub struct Screens {
     pub canvas: (u32, u32),
     pub rects: Vec<Rect>,
+    /// Connector names (e.g. "DP-3", "eDP-1") matching `rects` order.
+    pub names: Vec<String>,
 }
 
 type Props = HashMap<String, zbus::OwnedVariant>;
@@ -55,7 +57,7 @@ pub async fn detect_screens(conn: &zbus::Connection) -> Result<Screens> {
     // layout-mode 1 = logical (positions in scaled px), 2 = physical.
     let logical_layout = props.get("layout-mode").and_then(|v| v.downcast_ref::<u32>().ok()).unwrap_or(1) == 1;
 
-    let mut rects: Vec<(Rect, bool)> = Vec::new();
+    let mut rects: Vec<(Rect, bool, String)> = Vec::new();
     for (x, y, scale, transform, primary, specs, _) in &logical {
         let Some(spec) = specs.first() else { continue };
         let Some((_, modes, _)) = monitors.iter().find(|m| &m.0 == spec) else { continue };
@@ -69,7 +71,7 @@ pub async fn detect_screens(conn: &zbus::Connection) -> Result<Screens> {
         if transform % 2 == 1 {
             std::mem::swap(&mut w, &mut h);
         }
-        rects.push((Rect { x: *x, y: *y, w: w.round() as u32, h: h.round() as u32 }, *primary));
+        rects.push((Rect { x: *x, y: *y, w: w.round() as u32, h: h.round() as u32 }, *primary, spec.0.clone()));
     }
     if rects.is_empty() {
         bail!("no active monitors reported");
@@ -79,10 +81,9 @@ pub async fn detect_screens(conn: &zbus::Connection) -> Result<Screens> {
     let y0 = rects.iter().map(|r| r.0.y).min().unwrap();
     let x1 = rects.iter().map(|r| r.0.x + r.0.w as i32).max().unwrap();
     let y1 = rects.iter().map(|r| r.0.y + r.0.h as i32).max().unwrap();
-    Ok(Screens {
-        canvas: ((x1 - x0) as u32, (y1 - y0) as u32),
-        rects: rects.into_iter().map(|(r, _)| Rect { x: r.x - x0, y: r.y - y0, ..r }).collect(),
-    })
+    let names = rects.iter().map(|(_, _, n)| n.clone()).collect();
+    let rects = rects.into_iter().map(|(r, _, _)| Rect { x: r.x - x0, y: r.y - y0, ..r }).collect();
+    Ok(Screens { canvas: ((x1 - x0) as u32, (y1 - y0) as u32), rects, names })
 }
 
 #[derive(Clone)]
@@ -209,7 +210,7 @@ impl Base {
 }
 
 /// Optionally draw time + date onto `img` (screen-sized), encode, rewrite `out` in place.
-pub fn render_to(mut img: RgbImage, layout: Layout, clock: Option<(&Fonts, &ClockConfig)>, out: &Path) -> Result<()> {
+pub fn render_to(mut img: RgbImage, layout: &Layout, clock: Option<(&Fonts, &ClockConfig)>, out: &Path) -> Result<()> {
     if let Some((fonts, cfg)) = clock {
         draw_clock(&mut img, layout, fonts, cfg);
     }
@@ -221,34 +222,35 @@ pub fn render_to(mut img: RgbImage, layout: Layout, clock: Option<(&Fonts, &Cloc
     Ok(())
 }
 
-fn draw_clock(img: &mut RgbImage, layout: Layout, fonts: &Fonts, cfg: &ClockConfig) {
+fn draw_clock(img: &mut RgbImage, layout: &Layout, fonts: &Fonts, cfg: &ClockConfig) {
     let now = chrono::Local::now();
     let time = now.format(&cfg.time_format).to_string();
     let date = now.format(&cfg.date_format).to_string();
 
-    // Variety: ImageMagick at 100 dpi, offsets designed for 1080p; scale with the primary height.
-    let s = layout.primary.h as f32 / 1080.0;
-    let time_px = cfg.size * 100.0 / 72.0 * s;
-    let date_px = cfg.date_size * 100.0 / 72.0 * s;
-    let margin = 60.0 * s;
-    let p = layout.primary;
-    let (left, right) = (p.x as f32 + margin, (p.x + p.w as i32) as f32 - margin);
-    let right_align = cfg.position.ends_with("right");
-    let (time_base, date_base) = if cfg.position.starts_with("top") {
-        let t = p.y as f32 + margin + time_px * 0.8;
-        (t, t + date_px * 1.3)
-    } else {
-        let bottom = (p.y + p.h as i32) as f32;
-        (bottom - 110.0 * s, bottom - 60.0 * s)
-    };
+    for p in &layout.clocks {
+        // Variety: ImageMagick at 100 dpi, offsets designed for 1080p; scale with each monitor's height.
+        let s = p.h as f32 / 1080.0;
+        let time_px = cfg.size * 100.0 / 72.0 * s;
+        let date_px = cfg.date_size * 100.0 / 72.0 * s;
+        let margin = 60.0 * s;
+        let (left, right) = (p.x as f32 + margin, (p.x + p.w as i32) as f32 - margin);
+        let right_align = cfg.position.ends_with("right");
+        let (time_base, date_base) = if cfg.position.starts_with("top") {
+            let t = p.y as f32 + margin + time_px * 0.8;
+            (t, t + date_px * 1.3)
+        } else {
+            let bottom = (p.y + p.h as i32) as f32;
+            (bottom - 110.0 * s, bottom - 60.0 * s)
+        };
 
-    for (text, font, px, base) in [(&time, &fonts.time, time_px, time_base), (&date, &fonts.date, date_px, date_base)] {
-        let w = text_width(font, px, text);
-        let x = if right_align { right - w } else { left };
-        if cfg.shadow {
-            draw_text(img, font, px, text, x + 2.0 * s, base + 2.0 * s, [0, 0, 0], 0x44 as f32 / 255.0);
+        for (text, font, px, base) in [(&time, &fonts.time, time_px, time_base), (&date, &fonts.date, date_px, date_base)] {
+            let w = text_width(font, px, text);
+            let x = if right_align { right - w } else { left };
+            if cfg.shadow {
+                draw_text(img, font, px, text, x + 2.0 * s, base + 2.0 * s, [0, 0, 0], 0x44 as f32 / 255.0);
+            }
+            draw_text(img, font, px, text, x, base, [255, 255, 255], 1.0);
         }
-        draw_text(img, font, px, text, x, base, [255, 255, 255], 1.0);
     }
 }
 
@@ -303,4 +305,31 @@ fn layout_glyphs(font: &FontArc, px: f32, s: &str, x: f32, baseline: f32) -> Vec
         prev = Some(id);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compose_repeats_or_places_per_monitor() {
+        let dir = std::env::temp_dir().join("wallspin-test-compose");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let img1 = dir.join("a.png");
+        let img2 = dir.join("b.png");
+        RgbImage::from_pixel(40, 20, image::Rgb([200, 10, 10])).save(&img1).unwrap();
+        RgbImage::from_pixel(20, 20, image::Rgb([10, 10, 200])).save(&img2).unwrap();
+
+        let rects = vec![
+            Rect { x: 0, y: 0, w: 40, h: 20 },
+            Rect { x: 40, y: 0, w: 20, h: 20 },
+        ];
+        let layout = Layout { canvas: (60, 20), clocks: rects.clone() };
+        let (_, canvas) = compose(&[img1, img2], (60, 20), &rects, layout).unwrap();
+        assert_eq!(canvas.dimensions(), (60, 20));
+        assert!(canvas.get_pixel(10, 10)[0] > 150);
+        assert!(canvas.get_pixel(50, 10)[2] > 150);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

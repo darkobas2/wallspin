@@ -30,12 +30,13 @@ pub enum PromptKind {
 
 #[derive(Debug)]
 pub enum Cmd {
-    Next,
+    Next(Option<String>),
     Prev,
-    Fav,
-    Ban,
-    Trash,
+    Fav(Option<String>),
+    Ban(Option<String>),
+    Trash(Option<String>),
     Status,
+    MonitorsInfo,
     Download(u32),
     Reload,
     Locked(bool),
@@ -106,7 +107,7 @@ pub async fn run() -> Result<()> {
         actor: tx.clone(),
     };
     tokio::spawn(downloader.run(dl_rx));
-    tokio::spawn(timer_loop(cfg_rx.clone(), tx.clone(), |c| c.change_interval, || Cmd::Next));
+    tokio::spawn(timer_loop(cfg_rx.clone(), tx.clone(), |c| c.change_interval, || Cmd::Next(None)));
     tokio::spawn(timer_loop(cfg_rx.clone(), tx.clone(), |c| c.download_interval, || Cmd::Download(0)));
 
     {
@@ -291,12 +292,13 @@ impl Actor {
 
     async fn handle(&mut self, cmd: Cmd) -> Result<String> {
         match cmd {
-            Cmd::Next => self.next().await,
+            Cmd::Next(m) => self.next_for(m.as_deref()).await,
             Cmd::Prev => self.prev().await,
-            Cmd::Fav => self.favorite().await,
-            Cmd::Ban => self.ban().await,
-            Cmd::Trash => self.trash().await,
+            Cmd::Fav(m) => self.favorite_for(m.as_deref()).await,
+            Cmd::Ban(m) => self.ban_for(m.as_deref()).await,
+            Cmd::Trash(m) => self.trash_for(m.as_deref()).await,
             Cmd::Status => Ok(self.status()),
+            Cmd::MonitorsInfo => Ok(self.monitors_info().await),
             Cmd::Download(n) => {
                 let n = if n == 0 { self.cfg.download_batch.max(1) as u32 } else { n };
                 self.dl_tx.try_send(DlReq { n, only: None, reply: None }).ok();
@@ -413,7 +415,56 @@ impl Actor {
 
     /// Primary monitor's image.
     fn current(&self) -> Option<PathBuf> {
-        self.hist.get(self.pos).and_then(|f| f.first().cloned())
+        self.frame_image(0)
+    }
+
+    fn frame_image(&self, idx: usize) -> Option<PathBuf> {
+        let f = self.hist.get(self.pos)?;
+        f.get(idx).or_else(|| f.first()).cloned()
+    }
+
+    async fn screens(&self) -> clock::Screens {
+        clock::detect_screens(&self.conn).await.unwrap_or_else(|e| {
+            warn!("monitor layout unavailable ({e:#}); assuming 1920x1080");
+            clock::Screens {
+                canvas: (1920, 1080),
+                rects: vec![clock::Rect { x: 0, y: 0, w: 1920, h: 1080 }],
+                names: vec!["primary".into()],
+            }
+        })
+    }
+
+    async fn resolve_monitor(&self, spec: Option<&str>) -> Result<Option<usize>> {
+        let Some(raw) = spec.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Ok(None);
+        };
+        let screens = self.screens().await;
+        if let Ok(n) = raw.parse::<usize>()
+            && (1..=screens.names.len()).contains(&n)
+        {
+            return Ok(Some(n - 1));
+        }
+        if let Some(i) = screens.names.iter().position(|n| n.eq_ignore_ascii_case(raw)) {
+            return Ok(Some(i));
+        }
+        anyhow::bail!("unknown monitor {raw:?}; connected: {}", screens.names.join(", "))
+    }
+
+    async fn monitors_info(&self) -> String {
+        if self.cfg.monitors != MonitorMode::Each {
+            return String::new();
+        }
+        let screens = self.screens().await;
+        screens
+            .names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let file = self.frame_image(i).map(|p| file_name(&p)).unwrap_or_default();
+                format!("{name}\t{file}\t{}", i == 0)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn remote_count(&self) -> usize {
@@ -522,6 +573,40 @@ impl Actor {
 
     // ---------- commands ----------
 
+    async fn next_for(&mut self, monitor: Option<&str>) -> Result<String> {
+        let Some(idx) = self.resolve_monitor(monitor).await? else {
+            return self.next().await;
+        };
+        if self.cfg.monitors != MonitorMode::Each || self.hist.is_empty() {
+            return self.next().await;
+        }
+        anyhow::ensure!(!self.locked, "screen is locked");
+        self.fill_frame().await;
+        let screens = self.screens().await;
+        let r = screens.rects.get(idx).context("monitor out of range")?;
+        let mut frame = self.hist[self.pos].clone();
+        let p = self
+            .pick(&frame, Some(r.w as f64 / r.h as f64))
+            .context("no images available — add a source or run `wallspin download`")?;
+        if idx < frame.len() {
+            frame[idx] = p;
+        } else {
+            frame.push(p);
+        }
+        self.push_frame(frame);
+        self.show(true).await?;
+        Ok(self.describe())
+    }
+
+    fn push_frame(&mut self, frame: Frame) {
+        self.hist.push(frame);
+        if self.hist.len() > HISTORY_MAX {
+            let cut = self.hist.len() - HISTORY_MAX;
+            self.hist.drain(..cut);
+        }
+        self.pos = self.hist.len() - 1;
+    }
+
     async fn next(&mut self) -> Result<String> {
         anyhow::ensure!(!self.locked, "screen is locked");
         if self.pos + 1 < self.hist.len() {
@@ -530,12 +615,7 @@ impl Actor {
             return Ok(self.describe());
         }
         let frame = self.pick_frame().await.context("no images available — add a source or run `wallspin download`")?;
-        self.hist.push(frame);
-        if self.hist.len() > HISTORY_MAX {
-            let cut = self.hist.len() - HISTORY_MAX;
-            self.hist.drain(..cut);
-        }
-        self.pos = self.hist.len() - 1;
+        self.push_frame(frame);
         self.show(true).await?;
         if self.remote_count() < 10 && self.cfg.sources.iter().any(|s| s.enabled && s.provider.is_remote()) {
             self.dl_tx.try_send(DlReq { n: self.cfg.download_batch.max(1) as u32, only: None, reply: None }).ok();
@@ -555,8 +635,9 @@ impl Actor {
         self.hist.get(self.pos).map(|f| f.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n")).unwrap_or_default()
     }
 
-    async fn favorite(&mut self) -> Result<String> {
-        let cur = self.current().context("nothing shown yet")?;
+    async fn favorite_for(&mut self, monitor: Option<&str>) -> Result<String> {
+        let idx = self.resolve_monitor(monitor).await?.unwrap_or(0);
+        let cur = self.frame_image(idx).context("nothing shown yet")?;
         if cur.starts_with(&self.cfg.favorites_folder) {
             return Ok("already a favorite".into());
         }
@@ -571,9 +652,11 @@ impl Actor {
         Ok(format!("saved {}", dest.display()))
     }
 
-    /// Never show the primary image again (and never re-download it), then move on.
-    async fn ban(&mut self) -> Result<String> {
-        let cur = self.current().context("nothing shown yet")?;
+    /// Never show the monitor's image again (and never re-download it), then replace it.
+    async fn ban_for(&mut self, monitor: Option<&str>) -> Result<String> {
+        let idx = self.resolve_monitor(monitor).await?.unwrap_or(0);
+        let frame = self.hist.get(self.pos).cloned().context("nothing shown yet")?;
+        let cur = frame.get(idx).or_else(|| frame.first()).cloned().context("nothing shown yet")?;
         self.db.ban(&cur.to_string_lossy())?;
         if let Some(o) = self.db.origin(&cur)? {
             self.db.ban(&o)?;
@@ -582,17 +665,42 @@ impl Actor {
             let _ = std::fs::remove_file(&cur);
             self.db.forget_path(&cur)?;
         }
-        self.drop_image(&cur);
-        self.next().await.map(|n| format!("banned; now {n}"))
+        self.replace_after_drop(idx, &frame, &cur).await.map(|n| format!("banned; now {n}"))
     }
 
-    /// Move the primary image to the desktop trash (recoverable), then move on.
-    async fn trash(&mut self) -> Result<String> {
-        let cur = self.current().context("nothing shown yet")?;
+    /// Move the monitor's image to the desktop trash (recoverable), then replace it.
+    async fn trash_for(&mut self, monitor: Option<&str>) -> Result<String> {
+        let idx = self.resolve_monitor(monitor).await?.unwrap_or(0);
+        let frame = self.hist.get(self.pos).cloned().context("nothing shown yet")?;
+        let cur = frame.get(idx).or_else(|| frame.first()).cloned().context("nothing shown yet")?;
         let st = tokio::process::Command::new("gio").arg("trash").arg(&cur).status().await?;
         anyhow::ensure!(st.success(), "gio trash failed");
-        self.drop_image(&cur);
-        self.next().await.map(|n| format!("trashed; now {n}"))
+        self.replace_after_drop(idx, &frame, &cur).await.map(|n| format!("trashed; now {n}"))
+    }
+
+    async fn replace_after_drop(&mut self, idx: usize, prev_frame: &[PathBuf], dropped: &Path) -> Result<String> {
+        self.drop_image(dropped);
+        if self.cfg.monitors == MonitorMode::Each && prev_frame.len() > 1 {
+            let screens = self.screens().await;
+            let aspect = screens.rects.get(idx).map(|r| r.w as f64 / r.h as f64);
+            let mut exclude = prev_frame.to_vec();
+            if let Some(p) = self.pick(&exclude, aspect) {
+                let mut next_frame = prev_frame.to_vec();
+                if idx < next_frame.len() {
+                    next_frame[idx] = p;
+                } else {
+                    next_frame.push(p);
+                }
+                next_frame.retain(|f| f != dropped);
+                if !next_frame.is_empty() {
+                    self.push_frame(next_frame);
+                    self.show(true).await?;
+                    return Ok(self.describe());
+                }
+            }
+            let _ = &mut exclude;
+        }
+        self.next().await
     }
 
     /// Forget every frame that used `img` and step back so `next` picks fresh.
@@ -686,30 +794,31 @@ impl Actor {
     async fn apply(&mut self, frame: &[PathBuf], slot: Slot) -> Result<()> {
         let clock_on = slot == Slot::Desktop && self.clock_on();
         let mode = self.cfg.monitors;
-        let screens = clock::detect_screens(&self.conn).await.unwrap_or_else(|e| {
-            warn!("monitor layout unavailable ({e:#}); assuming 1920x1080");
-            clock::Screens { canvas: (1920, 1080), rects: vec![clock::Rect { x: 0, y: 0, w: 1920, h: 1080 }] }
-        });
+        let screens = self.screens().await;
         let primary = screens.rects[0];
-        let (canvas, rects, layout_primary) = match mode {
-            MonitorMode::Each => (screens.canvas, screens.rects.clone(), primary),
+        let (canvas, rects, clocks) = match mode {
+            MonitorMode::Each => {
+                let clocks = if self.cfg.clock.all_monitors { screens.rects.clone() } else { vec![primary] };
+                (screens.canvas, screens.rects.clone(), clocks)
+            }
             MonitorMode::Span => {
-                (screens.canvas, vec![clock::Rect { x: 0, y: 0, w: screens.canvas.0, h: screens.canvas.1 }], primary)
+                let clocks = if self.cfg.clock.all_monitors { screens.rects.clone() } else { vec![primary] };
+                (screens.canvas, vec![clock::Rect { x: 0, y: 0, w: screens.canvas.0, h: screens.canvas.1 }], clocks)
             }
             MonitorMode::Same => {
                 let r = clock::Rect { x: 0, y: 0, w: primary.w, h: primary.h };
-                ((primary.w, primary.h), vec![r], r)
+                ((primary.w, primary.h), vec![r], vec![r])
             }
         };
-        let layout = clock::Layout { canvas, primary: layout_primary };
+        let layout = clock::Layout { canvas, clocks };
         let images = frame.to_vec();
         let fonts = if clock_on { self.fonts.clone() } else { None };
         let ccfg = self.cfg.clock.clone();
         let out = self.out_path()?;
         let out2 = out.clone();
         let base = tokio::task::spawn_blocking(move || -> Result<clock::Base> {
-            let (base, raw) = clock::compose(&images, canvas, &rects, layout)?;
-            clock::render_to(raw, layout, fonts.as_ref().map(|f| (f, &ccfg)), &out2)?;
+            let (base, raw) = clock::compose(&images, canvas, &rects, layout.clone())?;
+            clock::render_to(raw, &layout, fonts.as_ref().map(|f| (f, &ccfg)), &out2)?;
             Ok(base)
         })
         .await??;
@@ -741,7 +850,7 @@ impl Actor {
         let out2 = out.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
             let img = base.decode()?;
-            clock::render_to(img, base.layout, Some((&fonts, &ccfg)), &out2)
+            clock::render_to(img, &base.layout, Some((&fonts, &ccfg)), &out2)
         })
         .await??;
         crate::trim_heap();
@@ -775,11 +884,49 @@ impl Actor {
             let cur: Vec<PathBuf> = self.hist.get(self.pos).cloned().unwrap_or_default();
             let from_dir = self.cfg.lockscreen.folder.clone().unwrap_or_else(|| self.cfg.favorites_folder.clone());
             let mut cands: Vec<PathBuf> = providers::scan_dir(&from_dir).into_iter().filter(|p| !cur.contains(p)).collect();
-            let img = if cands.is_empty() { self.pick(&cur, None) } else { Some(cands.swap_remove(rand::random_range(0..cands.len()))) };
-            if let Some(img) = img {
-                self.db.set_state("lock_swapped", Some(&img.to_string_lossy()))?;
-                self.apply(&[img.clone()], Slot::Lock).await?;
-                info!("lock screen: {}", img.display());
+            let screens = self.screens().await;
+            let count = if self.cfg.monitors == MonitorMode::Each { screens.rects.len() } else { 1 };
+            let mut lock_frame = Vec::with_capacity(count);
+            for i in 0..count {
+                let aspect = match self.cfg.monitors {
+                    MonitorMode::Span => Some(screens.canvas.0 as f64 / screens.canvas.1 as f64),
+                    _ => screens.rects.get(i).map(|r| r.w as f64 / r.h as f64),
+                };
+                let picked = if !cands.is_empty() {
+                    let matching: Vec<usize> = aspect
+                        .map(|a| {
+                            cands
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, p)| {
+                                    self.dims_of(p).is_some_and(|d| ((d.0 as f64 / d.1 as f64) / a - 1.0).abs() < 0.2)
+                                })
+                                .map(|(idx, _)| idx)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let pos = if !matching.is_empty() {
+                        matching[rand::random_range(0..matching.len())]
+                    } else {
+                        rand::random_range(0..cands.len())
+                    };
+                    Some(cands.swap_remove(pos))
+                } else {
+                    let mut exclude = cur.clone();
+                    exclude.extend(lock_frame.iter().cloned());
+                    self.pick(&exclude, aspect)
+                };
+                if let Some(img) = picked {
+                    lock_frame.push(img);
+                }
+            }
+            if !lock_frame.is_empty() {
+                self.db.set_state("lock_swapped", Some(&lock_frame[0].to_string_lossy()))?;
+                self.apply(&lock_frame, Slot::Lock).await?;
+                info!(
+                    "lock screen: {}",
+                    lock_frame.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" | ")
+                );
             }
         } else if self.db.get_state("lock_swapped")?.is_some() {
             self.rerender().await?;
@@ -802,12 +949,20 @@ impl Actor {
     async fn update_tray(&self) {
         let Some(h) = &self.tray else { return };
         let cur = self.current().map(|p| file_name(&p)).unwrap_or_default();
+        let screens = self.screens().await;
+        let monitor_items: Vec<(String, String)> = screens
+            .names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (name.clone(), self.frame_image(i).map(|p| file_name(&p)).unwrap_or_default()))
+            .collect();
         let sources: Vec<(String, bool)> = self.cfg.sources.iter().map(|s| (s.provider.label(), s.enabled)).collect();
         let lock = self.cfg.lockscreen.mode;
         let monitors = self.cfg.monitors;
         let clock = self.cfg.clock.enabled;
         h.update(move |t| {
             t.current = cur;
+            t.monitor_items = monitor_items;
             t.sources = sources;
             t.lock = lock;
             t.monitors = monitors;
@@ -970,22 +1125,37 @@ impl Api {
 #[zbus::interface(name = "io.github.Wallspin1")]
 impl Api {
     async fn next(&self) -> zbus::fdo::Result<String> {
-        self.call(Cmd::Next).await
+        self.call(Cmd::Next(None)).await
+    }
+    async fn next_monitor(&self, monitor: &str) -> zbus::fdo::Result<String> {
+        self.call(Cmd::Next(Some(monitor.to_string()))).await
     }
     async fn prev(&self) -> zbus::fdo::Result<String> {
         self.call(Cmd::Prev).await
     }
     async fn favorite(&self) -> zbus::fdo::Result<String> {
-        self.call(Cmd::Fav).await
+        self.call(Cmd::Fav(None)).await
+    }
+    async fn favorite_monitor(&self, monitor: &str) -> zbus::fdo::Result<String> {
+        self.call(Cmd::Fav(Some(monitor.to_string()))).await
     }
     async fn ban(&self) -> zbus::fdo::Result<String> {
-        self.call(Cmd::Ban).await
+        self.call(Cmd::Ban(None)).await
+    }
+    async fn ban_monitor(&self, monitor: &str) -> zbus::fdo::Result<String> {
+        self.call(Cmd::Ban(Some(monitor.to_string()))).await
     }
     async fn trash(&self) -> zbus::fdo::Result<String> {
-        self.call(Cmd::Trash).await
+        self.call(Cmd::Trash(None)).await
+    }
+    async fn trash_monitor(&self, monitor: &str) -> zbus::fdo::Result<String> {
+        self.call(Cmd::Trash(Some(monitor.to_string()))).await
     }
     async fn status(&self) -> zbus::fdo::Result<String> {
         self.call(Cmd::Status).await
+    }
+    async fn monitors_info(&self) -> zbus::fdo::Result<String> {
+        self.call(Cmd::MonitorsInfo).await
     }
     async fn download(&self, n: u32) -> zbus::fdo::Result<String> {
         self.call(Cmd::Download(n)).await
@@ -1091,10 +1261,10 @@ async fn listen_notification_actions(conn: zbus::Connection, id: Arc<AtomicU32>,
             continue;
         }
         let cmd = match action.as_str() {
-            "next" => Cmd::Next,
-            "fav" => Cmd::Fav,
-            "trash" => Cmd::Trash,
-            "ban" => Cmd::Ban,
+            "next" => Cmd::Next(None),
+            "fav" => Cmd::Fav(None),
+            "trash" => Cmd::Trash(None),
+            "ban" => Cmd::Ban(None),
             _ => continue,
         };
         send(&tx, cmd);
@@ -1159,6 +1329,7 @@ pub const SUGGESTED_TOPICS: &[&str] = &[
 pub struct Tray {
     tx: Tx,
     current: String,
+    monitor_items: Vec<(String, String)>,
     sources: Vec<(String, bool)>,
     lock: LockMode,
     monitors: MonitorMode,
@@ -1170,6 +1341,7 @@ async fn spawn_tray(tx: Tx, cfg: &Config) -> Option<ksni::Handle<Tray>> {
     let tray = Tray {
         tx,
         current: String::new(),
+        monitor_items: Vec::new(),
         sources: cfg.sources.iter().map(|s| (s.provider.label(), s.enabled)).collect(),
         lock: cfg.lockscreen.mode,
         monitors: cfg.monitors,
@@ -1213,11 +1385,11 @@ impl ksni::Tray for Tray {
     }
     /// Left click: next wallpaper.
     fn activate(&mut self, _x: i32, _y: i32) {
-        send(&self.tx, Cmd::Next);
+        send(&self.tx, Cmd::Next(None));
     }
     /// Scroll: walk history.
     fn scroll(&mut self, delta: i32, _o: ksni::Orientation) {
-        send(&self.tx, if delta > 0 { Cmd::Prev } else { Cmd::Next });
+        send(&self.tx, if delta > 0 { Cmd::Prev } else { Cmd::Next(None) });
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
@@ -1295,14 +1467,54 @@ impl ksni::Tray for Tray {
             ],
         };
 
-        vec![
+        let mut top = vec![
             StandardItem { label: self.current.clone(), enabled: false, ..Default::default() }.into(),
             MenuItem::Separator,
-            item("Next", "go-next", || Cmd::Next),
+            item("Next", "go-next", || Cmd::Next(None)),
             item("Previous", "go-previous", || Cmd::Prev),
-            item("♥ Favorite", "emblem-favorite", || Cmd::Fav),
-            item("Trash", "user-trash", || Cmd::Trash),
-            item("Ban (never show again)", "action-unavailable", || Cmd::Ban),
+            item("♥ Favorite", "emblem-favorite", || Cmd::Fav(None)),
+            item("Trash", "user-trash", || Cmd::Trash(None)),
+            item("Ban (never show again)", "action-unavailable", || Cmd::Ban(None)),
+        ];
+        if self.monitors == MonitorMode::Each && self.monitor_items.len() > 1 {
+            top.push(MenuItem::Separator);
+            for (name, file) in &self.monitor_items {
+                let label = if file.is_empty() { name.clone() } else { format!("{name} · {file}") };
+                let (m1, m2, m3, m4) = (name.clone(), name.clone(), name.clone(), name.clone());
+                let sub: Vec<ksni::MenuItem<Self>> = vec![
+                    StandardItem {
+                        label: "Next".into(),
+                        icon_name: "go-next".into(),
+                        activate: Box::new(move |t: &mut Tray| send(&t.tx, Cmd::Next(Some(m1.clone())))),
+                        ..Default::default()
+                    }
+                    .into(),
+                    StandardItem {
+                        label: "♥ Favorite".into(),
+                        icon_name: "emblem-favorite".into(),
+                        activate: Box::new(move |t: &mut Tray| send(&t.tx, Cmd::Fav(Some(m2.clone())))),
+                        ..Default::default()
+                    }
+                    .into(),
+                    StandardItem {
+                        label: "Trash".into(),
+                        icon_name: "user-trash".into(),
+                        activate: Box::new(move |t: &mut Tray| send(&t.tx, Cmd::Trash(Some(m3.clone())))),
+                        ..Default::default()
+                    }
+                    .into(),
+                    StandardItem {
+                        label: "Ban (never show again)".into(),
+                        icon_name: "action-unavailable".into(),
+                        activate: Box::new(move |t: &mut Tray| send(&t.tx, Cmd::Ban(Some(m4.clone())))),
+                        ..Default::default()
+                    }
+                    .into(),
+                ];
+                top.push(SubMenu { label, submenu: sub, ..Default::default() }.into());
+            }
+        }
+        top.extend([
             MenuItem::Separator,
             SubMenu { label: "Sources".into(), submenu: sources, ..Default::default() }.into(),
             SubMenu { label: "Add suggested topic".into(), submenu: suggested, ..Default::default() }.into(),
@@ -1325,6 +1537,7 @@ impl ksni::Tray for Tray {
             }
             .into(),
             item("Quit", "application-exit", || Cmd::Quit),
-        ]
+        ]);
+        top
     }
 }
