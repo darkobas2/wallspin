@@ -226,20 +226,22 @@ fn draw_clock(img: &mut RgbImage, layout: &Layout, fonts: &Fonts, cfg: &ClockCon
     let now = chrono::Local::now();
     let time = now.format(&cfg.time_format).to_string();
     let date = now.format(&cfg.date_format).to_string();
+    let minute = now.timestamp().div_euclid(60);
 
     for p in &layout.clocks {
         // Variety: ImageMagick at 100 dpi, offsets designed for 1080p; scale with each monitor's height.
         let s = p.h as f32 / 1080.0;
+        let (dx, dy) = burn_in_offset(minute, s);
         let time_px = cfg.size * 100.0 / 72.0 * s;
         let date_px = cfg.date_size * 100.0 / 72.0 * s;
         let margin = 60.0 * s;
-        let (left, right) = (p.x as f32 + margin, (p.x + p.w as i32) as f32 - margin);
+        let (left, right) = (p.x as f32 + margin + dx, (p.x + p.w as i32) as f32 - margin + dx);
         let right_align = cfg.position.ends_with("right");
         let (time_base, date_base) = if cfg.position.starts_with("top") {
-            let t = p.y as f32 + margin + time_px * 0.8;
+            let t = p.y as f32 + margin + time_px * 0.8 + dy;
             (t, t + date_px * 1.3)
         } else {
-            let bottom = (p.y + p.h as i32) as f32;
+            let bottom = (p.y + p.h as i32) as f32 + dy;
             (bottom - 110.0 * s, bottom - 60.0 * s)
         };
 
@@ -252,6 +254,14 @@ fn draw_clock(img: &mut RgbImage, layout: &Layout, fonts: &Fonts, cfg: &ClockCon
             draw_text(img, font, px, text, x, base, [255, 255, 255], 1.0);
         }
     }
+}
+
+/// Slow Lissajous pixel-shift to prevent OLED burn-in while staying within the margin.
+fn burn_in_offset(minute: i64, scale: f32) -> (f32, f32) {
+    use std::f32::consts::TAU;
+    let m_x = minute.rem_euclid(47) as f32 / 47.0 * TAU;
+    let m_y = minute.rem_euclid(31) as f32 / 31.0 * TAU;
+    (m_x.sin() * 16.0 * scale, m_y.cos() * 12.0 * scale)
 }
 
 fn text_width(font: &FontArc, px: f32, s: &str) -> f32 {
@@ -331,5 +341,26 @@ mod tests {
         assert!(canvas.get_pixel(10, 10)[0] > 150);
         assert!(canvas.get_pixel(50, 10)[2] > 150);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn burn_in_offset_wanders_smoothly_within_bounds() {
+        let mut min_x = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        let mut prev = burn_in_offset(0, 1.0);
+        for m in 1..120 {
+            let cur = burn_in_offset(m, 1.0);
+            assert!(cur.0.abs() <= 16.01 && cur.1.abs() <= 12.01);
+            assert!((cur.0 - prev.0).abs() < 3.0 && (cur.1 - prev.1).abs() < 3.0);
+            min_x = min_x.min(cur.0);
+            max_x = max_x.max(cur.0);
+            min_y = min_y.min(cur.1);
+            max_y = max_y.max(cur.1);
+            prev = cur;
+        }
+        assert!(min_x < -10.0 && max_x > 10.0);
+        assert!(min_y < -8.0 && max_y > 8.0);
     }
 }
